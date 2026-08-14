@@ -3,6 +3,7 @@
   "projectRoot": "../your-project",
   "memoryFile": "project-context.md",
   "goalFile": "project-goal.md",
+  "profileFile": "learner-profile.md",
   "filePatterns": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".glsl", ".vert", ".frag", ".html", ".css"],
   "scanExtensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".glsl", ".vert", ".frag", ".html", ".css", ".md", ".json"],
   "scanIgnore": ["node_modules", ".git", "dist", "build", ".next", "coverage", ".vercel", ".vs", ".vscode", ".idea", ".claude"],

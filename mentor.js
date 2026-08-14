@@ -31,14 +31,16 @@ if (!fs.existsSync(CONFIG_PATH)) {
   console.log("Created config.json from config.example.json.");
 }
 const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+cfg.profileFile ??= "learner-profile.md"; // default for configs made before this key existed
 
 // Resolved from cfg — recomputed after the first-run wizard may change paths.
-let WATCH_ROOT, PROJECT_ROOT, MEMORY_PATH, GOAL_PATH;
+let WATCH_ROOT, PROJECT_ROOT, MEMORY_PATH, GOAL_PATH, PROFILE_PATH;
 function resolvePaths() {
   WATCH_ROOT = path.resolve(__dirname, cfg.watchPath);
   PROJECT_ROOT = path.resolve(__dirname, cfg.projectRoot);
   MEMORY_PATH = path.join(__dirname, cfg.memoryFile);
   GOAL_PATH = path.join(__dirname, cfg.goalFile);
+  PROFILE_PATH = path.join(__dirname, cfg.profileFile);
 }
 resolvePaths();
 
@@ -69,6 +71,17 @@ Hard rules:
 - Meet them where they are. If they just wrote something correct, say so in a few words and point at
   the next interesting question. If they wrote a bug, ask a question that leads them to it.
 - Use correct terminology for whatever domain they are working in, and let them look the rest up.
+- Calibrate to the learner's level. A running profile of what they know and don't know is provided
+  below; never assume knowledge it says they lack, and pitch explanations at their level. If you are
+  unsure whether they know a concept you're about to rely on, ask briefly rather than assuming.
+- Explain the language, not the answer. When their diff uses syntax or an idiom they likely don't
+  know — arrow functions, destructuring, async/await, spread, optional chaining, and the like,
+  especially if their profile shows they're new to it — add a one- or two-line plain explanation of
+  what that construct does. Explaining how a language feature works is encouraged and is different
+  from solving their problem; keep doing the latter Socratically.
+- When the learner reveals something durable — their experience level, a concept they don't know, or
+  how they prefer to be taught — call the remember_about_learner tool with a short, specific note so
+  you and future sessions stay calibrated. Don't record one-off task details or things already noted.
 
 You receive a unified diff of everything the learner has changed since this session started, plus a
 note of which file they just saved. Focus on the latest edit but use the whole diff for context. You
@@ -84,6 +97,7 @@ const messages = []; // the running conversation with the mentor
 let sendWholeFile = false; // when true, saves include the full file, not just the diff
 let projectContext = ""; // one-time codebase summary, loaded from / written to MEMORY_PATH
 let projectGoal = ""; // the learner's own description of what they're building & want to learn
+let learnerProfile = ""; // durable notes on the learner's level & what they do/don't know
 let awaitingGoal = false; // true on first run until they've described their goal
 let awaitingSetup = false; // true while the first-run config wizard is running
 let setupSteps = [];
@@ -113,29 +127,63 @@ function buildSystem() {
   if (projectContext) {
     text += `\n\n== One-time overview of the codebase (you see only diffs during the session — lean on this) ==\n${projectContext}`;
   }
+  if (learnerProfile) {
+    text += `\n\n== What you know about this learner (calibrate to it; don't assume knowledge they lack) ==\n${learnerProfile}`;
+  }
   return [{ type: "text", text, cache_control: { type: "ephemeral" } }];
 }
 
+// The one tool the mentor can call: append a durable fact to the learner profile.
+const TOOLS = [
+  {
+    name: "remember_about_learner",
+    description:
+      "Record a durable fact about the learner's background, experience level, or which concepts they do or don't know, so you can calibrate now and in future sessions. Call it whenever they reveal unfamiliarity with something, state how they want to be taught, or show their level. Keep each note short and specific, e.g. 'New to JS: unfamiliar with arrow functions and destructuring'. Do not record one-off task details or facts already in the profile.",
+    input_schema: {
+      type: "object",
+      properties: {
+        note: { type: "string", description: "One concise, durable fact about the learner." },
+      },
+      required: ["note"],
+      additionalProperties: false,
+    },
+  },
+];
+
 async function runTurn() {
   process.stdout.write("\n" + c.cyan("mentor ▸ "));
-  const stream = client.messages.stream({
-    model: cfg.model,
-    max_tokens: cfg.maxTokens,
-    thinking: { type: "adaptive" }, // a little reasoning; effort keeps it snappy
-    output_config: { effort: cfg.effort }, // "low" for realtime; raise for depth
-    system: buildSystem(),
-    cache_control: { type: "ephemeral" }, // also cache the growing conversation prefix
-    messages,
-  });
+  // Loop so a remember_about_learner tool call can be handled, then continue.
+  while (true) {
+    const stream = client.messages.stream({
+      model: cfg.model,
+      max_tokens: cfg.maxTokens,
+      thinking: { type: "adaptive" }, // a little reasoning; effort keeps it snappy
+      output_config: { effort: cfg.effort }, // "low" for realtime; raise for depth
+      system: buildSystem(),
+      cache_control: { type: "ephemeral" }, // also cache the growing conversation prefix
+      tools: TOOLS,
+      messages,
+    });
 
-  stream.on("text", (delta) => process.stdout.write(delta));
-  const final = await stream.finalMessage();
+    stream.on("text", (delta) => process.stdout.write(delta));
+    const final = await stream.finalMessage();
+    messages.push({ role: "assistant", content: final.content }); // keep tool_use/thinking blocks
 
-  const text = final.content
-    .filter((b) => b.type === "text")
-    .map((b) => b.text)
-    .join("");
-  messages.push({ role: "assistant", content: text });
+    if (final.stop_reason !== "tool_use") break;
+
+    const results = [];
+    for (const block of final.content) {
+      if (block.type !== "tool_use") continue;
+      if (block.name === "remember_about_learner") {
+        const note = (block.input?.note || "").trim();
+        if (note) recordLearnerNote(note);
+        results.push({ type: "tool_result", tool_use_id: block.id, content: note ? "Noted." : "Empty note ignored." });
+      } else {
+        results.push({ type: "tool_result", tool_use_id: block.id, content: "Unknown tool.", is_error: true });
+      }
+    }
+    messages.push({ role: "user", content: results }); // feed results back, loop to continue
+  }
 
   process.stdout.write("\n");
   reprompt();
@@ -285,6 +333,20 @@ function greet() {
 }
 
 // -----------------------------------------------------------------------------
+// Learner profile — durable notes the mentor keeps (and updates) about the learner.
+// -----------------------------------------------------------------------------
+function loadProfile() {
+  if (fs.existsSync(PROFILE_PATH)) learnerProfile = fs.readFileSync(PROFILE_PATH, "utf8").trim();
+}
+
+function recordLearnerNote(note) {
+  if (!fs.existsSync(PROFILE_PATH)) fs.writeFileSync(PROFILE_PATH, "# Learner profile\n\n");
+  fs.appendFileSync(PROFILE_PATH, `- ${note}\n`);
+  learnerProfile = fs.readFileSync(PROFILE_PATH, "utf8").trim();
+  console.log("\n" + c.dim(`· profile updated: ${note}`));
+}
+
+// -----------------------------------------------------------------------------
 // Watcher (debounced per file)
 // -----------------------------------------------------------------------------
 const timers = new Map();
@@ -329,6 +391,7 @@ function reprompt() {
 const COMMANDS = `${c.dim("commands:")}
   ${c.green("/hint")} ${c.dim("[what you're unsure about]")}   next smallest hint, optionally about a specific thing
   ${c.green("/goal")} ${c.dim("[new goal]")}                  show your project goal, or set a new one
+  ${c.green("/profile")} ${c.dim("[note]")}                  show what the mentor knows about you, or add a note
   ${c.green("/whole-file")}                       toggle full-file vs diff-only context on save
   ${c.green("/rescan")}                           re-scan the codebase, rebuild project context
   ${c.green("/help")}                             show this list
@@ -393,6 +456,14 @@ rl.on("line", (line) => {
     } else {
       console.log("\n" + (projectGoal || c.dim("(no goal set yet)")));
     }
+    return reprompt();
+  }
+  if (text === "/profile") {
+    console.log("\n" + (learnerProfile || c.dim("(profile is empty — it fills in as you go)")));
+    return reprompt();
+  }
+  if (text.startsWith("/profile ")) {
+    recordLearnerNote(text.slice(9).trim());
     return reprompt();
   }
   if (text === "/hint" || text.startsWith("/hint ")) {
@@ -489,6 +560,7 @@ async function main() {
 
   if (firstRun) await runFirstRunSetup(); // may change model / effort / paths
   resolvePaths();
+  loadProfile(); // durable learner profile persists across sessions
 
   if (!fs.existsSync(WATCH_ROOT)) {
     console.error("\n" + c.yellow(`watchPath does not exist: ${WATCH_ROOT}`));

@@ -27,6 +27,11 @@ you type ───────────────────────�
   Edit that prompt to change how the mentor teaches. It contains no domain assumptions.
 - **Your goal, your words** — on first run it asks what you're building and why, and stores your
   answer in `project-goal.md`. Change it anytime with `/goal`.
+- **Learner profile (self-updating)** — the mentor keeps durable notes on your level and which
+  concepts you do/don't know in `learner-profile.md`, and reads them every turn so it explains at
+  your level (e.g. spelling out unfamiliar JS syntax it sees in your diff). It updates the profile
+  itself whenever you reveal something — say "I've never used arrow functions" and it records it.
+  View or add notes with `/profile`.
 - **Project context (one-time scan)** — on first run it also scans `projectRoot`, has Claude distill
   it into `project-context.md`, and grounds every turn in your real architecture instead of guessing
   from a bare diff. Cached after the first run; rebuild with `/rescan` (or delete the file).
@@ -67,6 +72,7 @@ writing code in the watched folder.
 |----------------------------------|---------------------------------------------------------------------------------|
 | `/hint [what you're unsure about]` | Next smallest hint — a concept, a function name, or the direction of the bug. Add detail to target it (`/hint why my triangle is black`). Never the fix. |
 | `/goal [new goal]`               | With no argument: print your current goal. With text: replace it.               |
+| `/profile [note]`                | With no argument: print what the mentor knows about you. With text: add a note (e.g. `/profile new to TypeScript`). The mentor also updates this on its own. |
 | `/whole-file`                    | Toggle context mode. **Off** (default): the mentor sees only the diff on each save. **On**: it also sees the full current file. |
 | `/rescan`                        | Re-scan the codebase and rebuild `project-context.md`. Run it after big structural changes. |
 | `/help`                          | List commands.                                                                  |
@@ -86,6 +92,7 @@ in. Edit `config.example.json` to change the shipped defaults.
 | `projectRoot`    | Folder scanned once for context. Usually the repo root above `watchPath`.     |
 | `memoryFile`     | Where the generated codebase summary is stored (`project-context.md`).        |
 | `goalFile`       | Where your described goal is stored (`project-goal.md`).                       |
+| `profileFile`    | Where the self-updating learner profile is stored (`learner-profile.md`).      |
 | `filePatterns`   | Extensions that count as "your code" for diff-watching.                       |
 | `scanExtensions` | Extensions included in the one-time context scan.                             |
 | `scanIgnore`     | Directories skipped by both the scan and the watcher (`node_modules`, `.git`, …). |
