@@ -2,9 +2,9 @@
 // =============================================================================
 // Socratic Mentor
 //
-// Watches a directory, keeps a rolling buffer of the last N diff lines you've
-// written, and hands that buffer to Claude — configured as a mentor that
-// teaches by asking questions, never by writing the code for you.
+// Watches a directory and, on each save, hands Claude the full diff of everything
+// you've changed since launch — configured as a mentor that teaches by asking
+// questions, never by writing the code for you.
 //
 // Two things feed the same ongoing conversation:
 //   1. You save a file   -> the mentor sees what changed and reacts.
@@ -20,10 +20,17 @@ import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import Anthropic from "@anthropic-ai/sdk";
-import { diffLines } from "diff";
+import { createPatch } from "diff";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, "config.json"), "utf8"));
+const CONFIG_PATH = path.join(__dirname, "config.json");
+// config.json is gitignored (it holds your paths/prefs). On a fresh clone, seed
+// it from the committed template so the app still runs.
+if (!fs.existsSync(CONFIG_PATH)) {
+  fs.copyFileSync(path.join(__dirname, "config.example.json"), CONFIG_PATH);
+  console.log("Created config.json from config.example.json.");
+}
+const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 
 // Resolved from cfg — recomputed after the first-run wizard may change paths.
 let WATCH_ROOT, PROJECT_ROOT, MEMORY_PATH, GOAL_PATH;
@@ -63,16 +70,16 @@ Hard rules:
   the next interesting question. If they wrote a bug, ask a question that leads them to it.
 - Use correct terminology for whatever domain they are working in, and let them look the rest up.
 
-You receive the learner's recent code changes as a diff buffer (lines prefixed + or -). React to what
-they just did. You will not see whole files unless told; infer from the change and ask for context
-when you need it. The learner's stated goal and a one-time overview of their codebase follow — ground
-your questions in those.`;
+You receive a unified diff of everything the learner has changed since this session started, plus a
+note of which file they just saved. Focus on the latest edit but use the whole diff for context. You
+will not see whole files unless told; ask when you need more. The learner's stated goal and a one-time
+overview of their codebase follow — ground your questions in those.`;
 
 // -----------------------------------------------------------------------------
 // State
 // -----------------------------------------------------------------------------
-const fileSnapshots = new Map(); // absolute path -> last-seen contents
-const diffBuffer = []; // rolling list of "+ line" / "- line", capped at N
+const fileSnapshots = new Map(); // absolute path -> current contents
+const baseline = new Map(); // absolute path -> contents captured at session start
 const messages = []; // the running conversation with the mentor
 let sendWholeFile = false; // when true, saves include the full file, not just the diff
 let projectContext = ""; // one-time codebase summary, loaded from / written to MEMORY_PATH
@@ -135,31 +142,42 @@ async function runTurn() {
 }
 
 // -----------------------------------------------------------------------------
-// Diff buffer: on each save, diff previous vs current and push changed lines.
+// Session diff: the full unified diff of everything changed since launch,
+// measured against the session-start snapshot (not save-over-save, not git).
 // -----------------------------------------------------------------------------
-function updateBuffer(relPath, prev, cur) {
-  for (const part of diffLines(prev, cur)) {
-    if (!part.added && !part.removed) continue;
-    const prefix = part.added ? "+" : "-";
-    for (const line of part.value.split("\n")) {
-      if (line === "") continue;
-      diffBuffer.push(`${prefix} ${line}`);
-    }
+function buildSessionDiff() {
+  const patches = [];
+  for (const [full, cur] of fileSnapshots) {
+    const base = baseline.get(full) ?? ""; // files created this session diff against ""
+    if (cur === base) continue;
+    patches.push(createPatch(path.relative(WATCH_ROOT, full), base, cur, "session start", "now"));
   }
-  while (diffBuffer.length > cfg.bufferLines) diffBuffer.shift();
-  return `The learner just edited ${relPath}. Here is the rolling buffer of their last ${cfg.bufferLines} changed lines (most recent at the bottom):\n\n${diffBuffer.join("\n")}`;
+  let text = patches.join("\n");
+  let truncated = false;
+  if (text.length > cfg.maxDiffBytes) {
+    text = text.slice(0, cfg.maxDiffBytes) + "\n… (diff truncated — it has grown large this session)";
+    truncated = true;
+  }
+  return { text: text || "(no changes since session start)", truncated, fileCount: patches.length };
 }
 
 function matches(file) {
   return cfg.filePatterns.some((ext) => file.endsWith(ext));
 }
 
+// Skip anything under an ignored directory (node_modules, .git, …).
+function isIgnoredPath(rel) {
+  return rel.split(path.sep).some((seg) => cfg.scanIgnore.includes(seg));
+}
+
 function snapshotAll() {
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) walk(full);
-      else if (matches(entry.name)) {
+      if (entry.isDirectory()) {
+        if (cfg.scanIgnore.includes(entry.name)) continue; // skip node_modules, .git, …
+        walk(full);
+      } else if (matches(entry.name)) {
         try {
           fileSnapshots.set(full, fs.readFileSync(full, "utf8"));
         } catch {}
@@ -272,7 +290,7 @@ function greet() {
 const timers = new Map();
 function watch() {
   fs.watch(WATCH_ROOT, { recursive: true }, (_event, filename) => {
-    if (!filename || !matches(filename)) return;
+    if (!filename || !matches(filename) || isIgnoredPath(filename)) return;
     const full = path.join(WATCH_ROOT, filename);
     clearTimeout(timers.get(full));
     timers.set(
@@ -289,11 +307,12 @@ function watch() {
         if (cur === prev) return;
         fileSnapshots.set(full, cur);
         const rel = path.relative(WATCH_ROOT, full);
-        const bufferMsg = updateBuffer(rel, prev, cur);
+        const { text, truncated, fileCount } = buildSessionDiff();
+        const header = `The learner just saved ${rel}. Below is the full unified diff of everything they've changed since this session started (${fileCount} file(s)${truncated ? ", truncated" : ""}); react especially to the latest edit.`;
         enqueue(
           sendWholeFile
-            ? `${bufferMsg}\n\nFull current contents of ${rel} for context:\n\n${cur}`
-            : bufferMsg
+            ? `${header}\n\n${text}\n\nFull current contents of ${rel}:\n\n${cur}`
+            : `${header}\n\n${text}`
         );
       }, cfg.debounceMs)
     );
@@ -395,7 +414,7 @@ rl.on("line", (line) => {
 // First-run wizard: pick the main config options interactively, persist them.
 // -----------------------------------------------------------------------------
 function saveConfig() {
-  fs.writeFileSync(path.join(__dirname, "config.json"), JSON.stringify(cfg, null, 2) + "\n");
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + "\n");
 }
 
 function buildSetupSteps() {
@@ -458,7 +477,7 @@ function runFirstRunSetup() {
 function banner() {
   console.log("\n" + c.dim("── Socratic Mentor ──────────────────────────────────────────"));
   console.log(c.dim(`watching   `) + WATCH_ROOT);
-  console.log(c.dim(`buffer     `) + `${cfg.bufferLines} diff lines   ` + c.dim("model ") + cfg.model + c.dim(" @ effort ") + cfg.effort);
+  console.log(c.dim(`context    `) + `session diff (≤${Math.round(cfg.maxDiffBytes / 1000)} KB)   ` + c.dim("model ") + cfg.model + c.dim(" @ effort ") + cfg.effort);
   console.log(c.dim(`type to talk · save a file for feedback · /help for commands`));
 }
 
@@ -480,6 +499,7 @@ async function main() {
   banner();
   await ensureContext();
   snapshotAll();
+  for (const [k, v] of fileSnapshots) baseline.set(k, v); // session-start snapshot to diff against
   watch();
 
   if (firstRun) {

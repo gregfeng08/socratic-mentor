@@ -1,27 +1,26 @@
 # Socratic Mentor
 
 A realtime coding mentor that watches what you write and **teaches by asking, not answering.**
-It keeps a rolling buffer of the last *N* lines you changed, hands that to Claude, and Claude —
-under a strict system prompt — responds with guiding questions and the smallest hints it can,
-never the solution. Domain-agnostic: point it at any project you're learning by hand.
+On each save it hands Claude the full diff of everything you've changed since you launched it, and
+Claude — under a strict system prompt — responds with guiding questions and the smallest hints it
+can, never the solution. Domain-agnostic: point it at any project you're learning by hand.
 
 ## How it works
 
 ```
-                  first run: scan projectRoot ──▶ Claude summary ──▶ project-context.md
-                                                                         │  (cached, reused)
-file save ──▶ debounce ──▶ diff vs. last snapshot ──▶ push changed lines │
-                                                          │              │
-                                              rolling buffer (last N)   goal + context
-                                                          │              │
+              launch: snapshot every watched file  ─┐   scan projectRoot ──▶ project-context.md
+                                                     │                          │ (cached, reused)
+file save ──▶ debounce ──▶ unified diff vs. snapshot ┘                          │
+                                                          │                goal + context
+                                                          │                     │
 you type ─────────────────────────────────────────────▶ Claude (streamed, context cached)
                                                           │
                                               questions & hints in your terminal
 ```
 
-- **Diff buffer** — every save is diffed against the previous version; the added/removed lines
-  (prefixed `+`/`-`) are appended to a buffer capped at `bufferLines`. That buffer is the mentor's
-  window into your recent work.
+- **Session diff** — at launch it snapshots every watched file. Each save produces a real unified
+  diff of *everything you've changed since then* (capped at `maxDiffBytes`), plus a note of which
+  file you just saved. Full context, not just the last keystroke — and no git repo required.
 - **Two-way** — save a file to get feedback, or type in the terminal to answer the mentor / ask it
   something. Both feed one continuous conversation, so it remembers what it already asked.
 - **Socratic by construction** — the behavior lives entirely in the system prompt in `mentor.js`.
@@ -58,8 +57,9 @@ variable also works if you prefer.)
 npm start
 ```
 
-On first run it scans the project, then asks you to describe your goal — type a sentence or two.
-After that, open your editor and start writing code in the watched folder.
+On first run a short wizard lets you pick the model, effort, and paths (Enter keeps each default),
+then it scans the project and asks you to describe your goal. After that, open your editor and start
+writing code in the watched folder.
 
 ## Commands (type in the terminal)
 
@@ -76,6 +76,10 @@ Anything that isn't a command is sent to the mentor as your reply.
 
 ## Configure — `config.json`
 
+Your `config.json` is **gitignored** (it holds your paths and preferences). The committed template
+is `config.example.json`; the app copies it to `config.json` on first run, and the wizard fills it
+in. Edit `config.example.json` to change the shipped defaults.
+
 | Key              | Meaning                                                                       |
 |------------------|-------------------------------------------------------------------------------|
 | `watchPath`      | Folder to watch for your edits (relative to this project).                    |
@@ -84,10 +88,10 @@ Anything that isn't a command is sent to the mentor as your reply.
 | `goalFile`       | Where your described goal is stored (`project-goal.md`).                       |
 | `filePatterns`   | Extensions that count as "your code" for diff-watching.                       |
 | `scanExtensions` | Extensions included in the one-time context scan.                             |
-| `scanIgnore`     | Directories skipped by the scan (`node_modules`, `.git`, …).                   |
+| `scanIgnore`     | Directories skipped by both the scan and the watcher (`node_modules`, `.git`, …). |
 | `scanIgnoreFiles`| Individual files skipped by the scan (lockfiles, `.env`).                      |
 | `scanMaxBytes`   | Cap on total source read during the scan.                                     |
-| `bufferLines`    | **N** — how many recent diff lines the mentor sees.                           |
+| `maxDiffBytes`   | Cap on the session diff sent each turn (truncated past this).                 |
 | `debounceMs`     | Quiet period after a save before the mentor reacts.                           |
 | `model`          | Claude model. `claude-sonnet-5` (default) balances quality and cost; `claude-opus-5` is sharpest; `claude-haiku-4-5` is cheapest. |
 | `effort`         | `low` for snappy realtime feel; raise to `medium`/`high` for deeper pushback. |
