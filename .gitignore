@@ -1,0 +1,4 @@
+node_modules/
+.env
+project-context.md
+project-goal.md

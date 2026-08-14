@@ -1,0 +1,21 @@
+{
+  "name": "socratic-mentor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A realtime, Socratic coding mentor that watches a diff buffer and teaches by asking, not by answering.",
+  "bin": {
+    "mentor": "mentor.js"
+  },
+  "scripts": {
+    "start": "node mentor.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.68.0",
+    "diff": "^7.0.0",
+    "dotenv": "^16.4.5"
+  }
+}

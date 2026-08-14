@@ -1,0 +1,16 @@
+{
+  "watchPath": "../your-project/src",
+  "projectRoot": "../your-project",
+  "memoryFile": "project-context.md",
+  "goalFile": "project-goal.md",
+  "filePatterns": [".js", ".mjs", ".glsl", ".vert", ".frag", ".html", ".ts"],
+  "scanExtensions": [".js", ".jsx", ".ts", ".tsx", ".mjs", ".glsl", ".vert", ".frag", ".html", ".css", ".md", ".json"],
+  "scanIgnore": ["node_modules", ".git", "dist", "build", ".next", "coverage", ".vercel", ".vs", ".vscode", ".idea", ".claude"],
+  "scanIgnoreFiles": ["package-lock.json", "yarn.lock", "pnpm-lock.yaml", ".env"],
+  "scanMaxBytes": 500000,
+  "bufferLines": 40,
+  "debounceMs": 900,
+  "model": "claude-sonnet-5",
+  "effort": "low",
+  "maxTokens": 2048
+}
